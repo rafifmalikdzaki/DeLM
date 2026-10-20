@@ -6,11 +6,14 @@ and idempotent retries.
 """
 
 import json
+import os
 import re
 import shutil
 import subprocess
 import sys
 import tempfile
+import threading
+import time
 import unittest
 from pathlib import Path
 
@@ -187,6 +190,45 @@ class TestDelmMcpServer(unittest.TestCase):
         copied_file = self.workspace_2 / "schema.sql"
         self.assertTrue(copied_file.is_file())
         self.assertIn("CREATE TABLE users", copied_file.read_text())
+
+    def test_blocking_wait_woken_by_peer(self):
+        """A waiting read returns as soon as a peer publishes."""
+        self.agent_a.call_tool("delm_update_status", {"text": "init"})
+        self.agent_b.call_tool("delm_update_status", {"text": "init"})
+        result = {}
+
+        def waiter():
+            started = time.monotonic()
+            result["resp"] = self.agent_b.call_tool(
+                "delm_read_board", {"wait_seconds": 15})
+            result["waited"] = time.monotonic() - started
+
+        thread = threading.Thread(target=waiter)
+        thread.start()
+        time.sleep(1.0)  # let the peer enter the blocking wait
+        self.agent_a.call_tool("delm_publish_note", {
+            "note_type": "FACT", "text": "wake up", "scope": "s", "basis": "b"})
+        thread.join(timeout=25)
+        self.assertFalse(thread.is_alive(), "waiting read was not woken")
+        resp = result["resp"]
+        self.assertFalse(resp["isError"], resp)
+        self.assertIn("wake up", resp["content"][0]["text"])
+        self.assertLess(result["waited"], 15)
+
+    def test_storage_failure_is_clean_error(self):
+        """An unwritable board yields a board error, never an 'Unexpected' leak."""
+        if os.geteuid() == 0:
+            self.skipTest("read-only files do not block root")
+        self.agent_a.call_tool("delm_update_status", {"text": "init"})
+        for name in self.temp_dir.glob("*.sqlite*"):
+            name.chmod(0o444)
+        # No permission restore needed: tearDown removes the whole temp dir
+        # (rmtree only needs write permission on the directory itself).
+        res = self.agent_a.call_tool("delm_update_status", {"text": "x"})
+        self.assertTrue(res["isError"], res)
+        text = res["content"][0]["text"]
+        self.assertIn("board storage temporarily unavailable", text)
+        self.assertNotIn("Unexpected", text)
 
 
 class TestProtocolCompliance(unittest.TestCase):
