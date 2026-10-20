@@ -13,7 +13,7 @@
 | 📄 <a href="https://arxiv.org/abs/2606.10662"><b>Paper</b></a>
 | 🌐 <a href="https://yuzhenmao.github.io/DeLM/"><b>Project Website</b></a>
 | 🤗 <a href="https://huggingface.co/datasets/yuzhenm/delm-720-trajectories"><b>Trajectories</b></a>
-| 🧩 <a href="https://github.com/Decentralized-LM/delm-agent-plugin"><b>Plugin</b></a>
+| 🧩 <a href="#model-context-protocol-mcp-server"><b>MCP Server</b></a>
 | 🚀 <a href="#quickstart"><b>Quickstart</b></a>
 | 📊 <a href="#results"><b>Results</b></a>
 | <img src="assets/readme/discord.svg" alt="" height="16"> <a href="https://discord.gg/v26ygg2bbb"><b>Discord</b></a> |
@@ -22,6 +22,8 @@
 **Open trajectories:** We also release all **720 DeLM agent trajectories** from our
 Terminal-Bench 4.0 and DeepSWE v1.1 evaluations on
 [Hugging Face](https://huggingface.co/datasets/yuzhenm/delm-720-trajectories).
+
+**Model Context Protocol (MCP) Server:** Connect parallel agents in **Claude Code, Codex, OpenCode (`oc`), and Antigravity (`agy`)** to DeLM's decentralized board using our [built-in MCP server](#model-context-protocol-mcp-server).
 
 **Agent plugin:** Use DeLM's collaborating agents inside Codex and Claude Code with
 [delm-agent-plugin](https://github.com/Decentralized-LM/delm-agent-plugin).
@@ -34,6 +36,104 @@ complete solution.
 - **Decentralized coordination:** peers share progress through the shared context, without a main agent relaying their work.
 - **Higher accuracy with lower latency:** on the paper's 10-task Terminal-Bench 4.0 subset, DeLM with two agents averages **+12.5 percentage points** and **1.78× speedup** over the base harnesses across two models.
 - **Two harnesses, one engine:** this branch runs **n=2 or n=4** with **Codex or Claude Code**, using independent Docker images and a shared evaluation pipeline.
+
+---
+
+## Model Context Protocol (MCP) Server
+
+This repository includes a zero-dependency **Model Context Protocol (MCP)** server ([`mcp_server/cli.py`](mcp_server/cli.py)) that wraps DeLM's decentralized shared-context engine over standard I/O JSON-RPC.
+
+Any tool-calling agent in **Claude Code**, **OpenAI Codex**, **OpenCode (`oc`)**, or **Antigravity (`agy`)** can attach to a common shared SQLite board to coordinate asynchronously:
+- **Scope Reservation & Claims**: Agents atomically claim work without an orchestrator bottleneck.
+- **Shared Knowledge**: Agents publish verified findings (`FACT`) and disproven hypotheses/blockers (`FAIL`).
+- **File Diff Sharing**: Agents inspect diffs and pull peer solutions directly into their own workspace.
+
+### Quickstart (MCP)
+
+#### 1. Launch / Verify the MCP Server Directly
+```bash
+python3 mcp_server/cli.py --actor agent-1 --board .delm/board.sqlite --workspace .
+```
+*(Requires Python 3.12+; no extra packages or virtual environments needed).*
+
+#### 2. Configure Your Coding Assistants
+
+Point multiple agents running on the same machine to the same `--board` path (e.g., `/path/to/project/.delm/board.sqlite`):
+
+* **Claude Code**:
+  ```bash
+  claude mcp add delm -- python3 /path/to/DeLM/mcp_server/cli.py \
+    --actor claude-1 \
+    --board /path/to/project/.delm/board.sqlite \
+    --workspace /path/to/project
+  ```
+
+* **OpenAI Codex** (`~/.codex/config.json`):
+  ```json
+  {
+    "mcpServers": {
+      "delm": {
+        "command": "python3",
+        "args": [
+          "/path/to/DeLM/mcp_server/cli.py",
+          "--actor", "codex-1",
+          "--board", "/path/to/project/.delm/board.sqlite",
+          "--workspace", "/path/to/project"
+        ]
+      }
+    }
+  }
+  ```
+
+* **OpenCode (`oc`)** (`~/.config/opencode/mcp.json`):
+  ```json
+  {
+    "mcp": {
+      "delm": {
+        "command": "python3",
+        "args": [
+          "/path/to/DeLM/mcp_server/cli.py",
+          "--actor", "oc-1",
+          "--board", "/path/to/project/.delm/board.sqlite",
+          "--workspace", "/path/to/project"
+        ]
+      }
+    }
+  }
+  ```
+
+* **Antigravity (`agy`)** (`~/.gemini/settings.json`):
+  ```json
+  {
+    "mcpServers": {
+      "delm": {
+        "command": "python3",
+        "args": [
+          "/path/to/DeLM/mcp_server/cli.py",
+          "--actor", "agy-1",
+          "--board", "/path/to/project/.delm/board.sqlite",
+          "--workspace", "/path/to/project"
+        ]
+      }
+    }
+  }
+  ```
+
+### Exposed Coordination Tools
+
+Connected agents automatically gain access to 8 coordination primitives:
+- `delm_read_board`: Read current board state and active tasks with markdown rendering.
+- `delm_reserve_task`: Atomically declare intent, create a scope, and claim an item.
+- `delm_claim_task`: Claim an existing open task by ID.
+- `delm_complete_task`: Mark a task complete with a solution summary and attached files.
+- `delm_publish_note`: Share verified facts (`FACT`) or blockers/failures (`FAIL`).
+- `delm_update_status`: Publish current agent focus and activity.
+- `delm_inspect_files`: Inspect diffs and files attached by peers (`expand`).
+- `delm_apply_files`: Write a peer's published files into the local workspace (`apply`).
+
+For in-depth architecture details and sequence diagrams, see:
+- 📖 [MCP Architecture & Technical Reference](docs/MCP_ARCHITECTURE.md)
+- 🛠️ [Detailed Client Setup Guide](docs/MCP_SETUP_GUIDE.md)
 
 ---
 
