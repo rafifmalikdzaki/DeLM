@@ -85,3 +85,13 @@ Two correctness bugs were reproduced and fixed, and the server was hardened for 
 - **Tests**: `tests/test_mcp_server.py` grew from 2 to 31 tests (protocol, validation, publish/claim, baseline diffs, conflict apply, path safety, concurrent reserve, idempotent retries, CLI wiring). Run: `python3 -m unittest tests/test_mcp_server.py -v`.
 
 Key files: `mcp_server/server.py`, `mcp_server/files.py` (new), `mcp_server/cli.py`, `mcp_server/__main__.py` (new), `pyproject.toml` (new), `docs/MCP_SETUP_GUIDE.md` (install + troubleshooting), `docs/MCP_ARCHITECTURE.md`, `README.md`.
+
+### Follow-up hardening (same week)
+
+- **Request-id collision**: the derived default id hashed only attach *paths*; re-running a note with updated file content was rejected (`request_id was already used`). Default ids now hash file contents, so true retries replay while new content publishes. Guarded by `test_same_text_new_content_creates_new_publication`.
+- **Truncated board ids**: `format_view` cut item ids to 8 chars, so a peer reading the board could not call inspect/apply. Full item and note ids are now rendered. Guarded by `test_board_text_carries_usable_ids`.
+- **Silent WAL misconfig**: `bodydb.PRAGMA journal_mode=WAL` is invalid SQL and silently skipped bodies-DB tuning. Fixed to `PRAGMA bodydb.journal_mode=WAL` (+ busy timeout). Guarded by `test_both_databases_use_wal`.
+- **Storage resilience**: `call_tool` retries transient SQLITE_BUSY with backoff and converts other `sqlite3.Error`s into clean board errors; CLI rejects a `--board` pointing at a directory (exit 2). Guarded by `test_board_directory_rejected`.
+- **Containerized**: `mcp_server/Dockerfile` (`python:3.12-slim`, non-root uid 10001, `delm-mcp` entrypoint) added; verified two containers coordinating (reserve → complete+attach → read → inspect → apply) over a bind-mounted board. Client `docker run -i` config documented in `docs/MCP_SETUP_GUIDE.md` §8.
+- No DeLM-repo MCP processes were running (the 13 matches were Harness²'s `mcp_server.py`, a different project — left untouched).
+- Tests: 36 passing (`python3 -m unittest tests/test_mcp_server.py`).

@@ -7,6 +7,7 @@ import argparse
 import logging
 import os
 import signal
+import sqlite3
 import sys
 from pathlib import Path
 
@@ -96,6 +97,9 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     board = Path(args.board).resolve()
+    if board.exists() and not board.is_file():
+        print(f"delm-mcp: board path is not a regular file: {board}", file=sys.stderr)
+        return 2
     try:
         board.parent.mkdir(parents=True, exist_ok=True)
     except OSError as error:
@@ -110,7 +114,7 @@ def main(argv: list[str] | None = None) -> int:
             peers=args.peers,
             baseline_path=baseline,
         )
-    except (ValueError, OSError) as error:
+    except (ValueError, OSError, sqlite3.Error) as error:
         print(f"delm-mcp: cannot open board {board}: {error}", file=sys.stderr)
         return 1
 

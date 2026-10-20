@@ -205,3 +205,55 @@ echo '{"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}}' \
 ```bash
 python3 -m unittest tests/test_mcp_server.py -v
 ```
+
+---
+
+## 8. Running in Docker
+
+The server ships as a minimal image (`python:3.12-slim`, no third-party packages).
+Build it from the repository root:
+
+```bash
+docker build -f mcp_server/Dockerfile -t delm-mcp:1.0.0 .
+```
+
+Each agent runs its own container against the **same** board file via a bind
+mount, with its own `--actor` and `--workspace`:
+
+```bash
+# One shared board dir + one workspace dir per agent (must be writable
+# by the container user, uid 10001):
+mkdir -p /shared/project/.delm /shared/project/work-codex
+chmod a+rwX /shared/project/.delm /shared/project/work-codex
+
+docker run -i --rm \
+  -v /shared/project/.delm:/data \
+  -v /shared/project/work-codex:/work \
+  delm-mcp:1.0.0 \
+  --actor codex-1 --board /data/board.sqlite --workspace /work
+```
+
+(Alternative to `chmod`: `chown -R 10001 /shared/project/.delm`, or add
+`--user $(id -u):$(id -g)` to run as yourself.)
+
+Point a client at the container (Codex `~/.codex/config.json` shown; same shape
+for Claude Code, OpenCode, Antigravity):
+
+```json
+{
+  "mcpServers": {
+    "delm": {
+      "command": "docker",
+      "args": [
+        "run", "-i", "--rm",
+        "-v", "/shared/project/.delm:/data",
+        "-v", "/shared/project/work-codex:/work",
+        "delm-mcp:1.0.0",
+        "--actor", "codex-1",
+        "--board", "/data/board.sqlite",
+        "--workspace", "/work"
+      ]
+    }
+  }
+}
+```

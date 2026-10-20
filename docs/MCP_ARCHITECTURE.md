@@ -82,7 +82,9 @@ The server wraps [`ProtectedBoard`](../board/protected_board.py) (the same harde
 
 ## 3. Tool Reference
 
-The MCP server exposes 9 coordination tools to connected models:
+The MCP server exposes 9 coordination tools to connected models. Board text renders
+full item and publication ids: they are the handles agents pass back to
+`delm_claim_task`, `delm_inspect_files`, and `delm_apply_files`.
 
 | Tool | Action | Primary Arguments | Description |
 | :--- | :--- | :--- | :--- |
@@ -132,7 +134,7 @@ sequenceDiagram
 
 Each client launches an MCP server process over standard I/O pointing to the same shared SQLite file (`.delm/board.sqlite`).
 
-Install once with `pipx install /path/to/DeLM` (or run uninstalled via `python3 /path/to/DeLM/mcp_server/cli.py`; no `PYTHONPATH` needed). Full per-client JSON is in the [setup guide](MCP_SETUP_GUIDE.md).
+Install once with `pipx install /path/to/DeLM` (or run uninstalled via `python3 /path/to/DeLM/mcp_server/cli.py`; no `PYTHONPATH` needed), or run the containerized server (`docker build -f mcp_server/Dockerfile -t delm-mcp:1.0.0 .`). Full per-client JSON, including a `docker run -i` client configuration, is in the [setup guide](MCP_SETUP_GUIDE.md).
 
 ### Claude Code
 ```bash

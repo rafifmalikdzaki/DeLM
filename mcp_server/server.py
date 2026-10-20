@@ -94,7 +94,8 @@ def format_view(view: Dict[str, Any]) -> str:
             f"⏳ [CLAIMED by {item.get('owner')}]" if item.get("state") == "claimed" else "⚪ [OPEN]"
         )
         files_info = f" ({len(item.get('files', []))} files attached)" if item.get("files") else ""
-        lines.append(f"- **`{item.get('id', '')[:8]}`** {status_indicator} **{item.get('subject', 'Untitled')}**{files_info}")
+        # Full ids are shown: they are the handles for claim/inspect/apply.
+        lines.append(f"- `{item.get('id', '')}` {status_indicator} **{item.get('subject', 'Untitled')}**{files_info}")
         if item.get("detail"):
             lines.append(f"  *Detail:* {item.get('detail')}")
         if item.get("summary"):
@@ -111,6 +112,7 @@ def format_view(view: Dict[str, Any]) -> str:
             author = note.get("actor", "unknown")
             files_info = f" (attached: {', '.join(f.get('path', '') for f in note.get('files', []))})" if note.get("files") else ""
             lines.append(f"- {icon} **{author}** on `{note.get('scope', 'general')}`: {note.get('text', '')}{files_info}")
+            lines.append(f"  *id:* `{note.get('id', '')}`")
             if note.get("basis"):
                 lines.append(f"  *Evidence/Basis:* {note.get('basis')}")
         if len(notes) > 30:
@@ -168,8 +170,9 @@ class DelmMcpServer:
                 db.execute("PRAGMA busy_timeout=10000")
                 db.execute("PRAGMA synchronous=NORMAL")
                 db.execute("ATTACH DATABASE ? AS bodydb", (str(self.sc.bodies_path),))
-                db.execute("bodydb.PRAGMA journal_mode=WAL")
-                db.execute("bodydb.PRAGMA busy_timeout=10000")
+                db.execute("PRAGMA bodydb.journal_mode=WAL")
+                db.execute("PRAGMA bodydb.busy_timeout=10000")
+                db.execute("PRAGMA bodydb.synchronous=NORMAL")
             finally:
                 db.close()
         except Exception as error:  # pragma: no cover - tuning only
@@ -206,6 +209,22 @@ class DelmMcpServer:
         return hashlib.sha256(
             json.dumps(payload, sort_keys=True, ensure_ascii=False).encode()
         ).hexdigest()
+
+    @staticmethod
+    def _content_identities(files: List[Dict[str, Any]]) -> List[Dict[str, str]]:
+        """Content-sensitive file identities so retries replay but new content republishes."""
+        return sorted(
+            (
+                {
+                    "path": entry["path"],
+                    "sha256": hashlib.sha256(
+                        entry["content"].encode("utf-8")
+                    ).hexdigest(),
+                }
+                for entry in files
+            ),
+            key=lambda item: item["path"],
+        )
 
     def _request_id(self, arguments: Dict[str, Any], payload: Dict[str, Any]) -> str:
         request_id = arguments.get("request_id")
@@ -431,7 +450,7 @@ class DelmMcpServer:
         """Execute an MCP tool call, returning MCP content blocks."""
         started = time.monotonic()
         try:
-            result = self._dispatch(name, arguments or {})
+            result = self._dispatch_with_retry(name, arguments or {})
         except BoardError as error:
             result = err_result(f"DeLM Board Error: {error}")
         except Exception as error:  # pragma: no cover - defensive
@@ -443,6 +462,36 @@ class DelmMcpServer:
         )
         return result
 
+    def _dispatch_with_retry(self, name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
+        """Run the tool, retrying transient SQLite lock contention.
+
+        Concurrent writers can hit SQLITE_BUSY despite the connect timeout
+        (slow disks, network filesystems, many agents). A busy failure means
+        the statement never ran, so retrying with backoff is safe; anything
+        else from storage becomes a clean BoardError instead of an
+        "Unexpected Error" leak.
+        """
+        last_error: Optional[Exception] = None
+        for attempt in range(4):
+            try:
+                return self._dispatch(name, arguments)
+            except BoardError:
+                raise
+            except sqlite3.OperationalError as error:
+                last_error = error
+                if "locked" not in str(error).lower() and "busy" not in str(error).lower():
+                    break
+                log.warning(
+                    "tool=%s board busy (attempt %d/4), retrying", name, attempt + 1
+                )
+                time.sleep(0.05 * (2 ** attempt))
+            except sqlite3.Error as error:
+                last_error = error
+                break
+        raise BoardError(
+            f"board storage temporarily unavailable ({last_error}); retry the call"
+        )
+
     def _dispatch(self, name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
         if name == "delm_read_board":
             raw_wait = arguments.get("wait_seconds", 0)
@@ -452,7 +501,7 @@ class DelmMcpServer:
                 raise BoardError("wait_seconds must be a number") from None
             wait = max(0.0, min(wait, WAIT_CAP_SECONDS))
             full = bool(arguments.get("full", False))
-            target = arguments.get("target")
+            target = arguments.get("target") or None
             if target is not None:
                 target = checked_id("target", target)
             view = self.sc.read(self.actor, full=full, wait_seconds=wait, target=target)
@@ -522,7 +571,7 @@ class DelmMcpServer:
             files = self._attach_files(arguments.get("attach_paths"))
             request_id = self._request_id(
                 arguments, {"kind": "done", "item": item_id, "summary": summary,
-                            "files": [f["path"] for f in files] if files else []},
+                            "files": self._content_identities(files) if files else []},
             )
             res = self.sc.done(self.actor, item_id, summary, files=files, request_id=request_id)
             attached = len(files) if files else 0
@@ -542,7 +591,7 @@ class DelmMcpServer:
             request_id = self._request_id(
                 arguments, {"kind": "note", "type": note_type, "text": text,
                             "scope": scope, "basis": basis,
-                            "files": [f["path"] for f in files] if files else []},
+                            "files": self._content_identities(files) if files else []},
             )
             res = self.sc.note(
                 self.actor, note_type, text, scope, basis,

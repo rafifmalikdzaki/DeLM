@@ -6,6 +6,7 @@ and idempotent retries.
 """
 
 import json
+import re
 import shutil
 import subprocess
 import sys
@@ -385,6 +386,26 @@ class TestInspectAndApply(unittest.TestCase):
         second = self.agent_b.call_tool("delm_apply_files", {"publication_id": pub_id})
         self.assertFalse(second["isError"], second)
 
+    def test_board_text_carries_usable_ids(self):
+        """A peer working only from rendered board text can inspect and apply."""
+        self.agent_a.call_tool("delm_reserve_task", {"subject": "Text ids", "detail": "d"})
+        item_id = self.agent_a.sc.read("aa", full=True)["queue"][0]["id"]
+        (self.ws_a / "doc.txt").write_text("hello\n")
+        done = self.agent_a.call_tool("delm_complete_task", {
+            "item_id": item_id, "summary": "s", "attach_paths": ["doc.txt"]})
+        self.assertFalse(done["isError"], done)
+        text = self.agent_b.call_tool(
+            "delm_read_board", {"full": True})["content"][0]["text"]
+        match = re.search(r"`([0-9a-f]{32})`", text)
+        self.assertIsNotNone(match, text)
+        found = match.group(1)
+        insp = self.agent_b.call_tool("delm_inspect_files", {"publication_id": found})
+        self.assertFalse(insp["isError"], insp)
+        self.assertIn("doc.txt", insp["content"][0]["text"])
+        appl = self.agent_b.call_tool("delm_apply_files", {"publication_id": found})
+        self.assertFalse(appl["isError"], appl)
+        self.assertEqual((self.ws_b / "doc.txt").read_text(), "hello\n")
+
     def test_apply_subset_paths(self):
         self.agent_a.call_tool("delm_reserve_task", {"subject": "S2", "detail": "D"})
         item_id = self.agent_a.sc.read("aa", full=True)["queue"][0]["id"]
@@ -466,6 +487,29 @@ class TestIdempotentRetries(unittest.TestCase):
         self.assertIn(first["content"][0]["text"].split("Publication ID: `")[1].split("`")[0],
                         second["content"][0]["text"])
 
+    def test_same_text_new_content_creates_new_publication(self):
+        """Re-running a note with updated attachments must publish, not error."""
+        log = self.ws_a / "log.txt"
+        log.write_text("run 1\n")
+        args = {"note_type": "FACT", "text": "bench", "scope": "s",
+                "basis": "b", "attach_paths": ["log.txt"]}
+        first = self.agent_a.call_tool("delm_publish_note", dict(args))
+        self.assertFalse(first["isError"], first)
+        log.write_text("run 2 - different output\n")
+        second = self.agent_a.call_tool("delm_publish_note", dict(args))
+        self.assertFalse(second["isError"], second)
+        id1 = first["content"][0]["text"].split("`")[1]
+        id2 = second["content"][0]["text"].split("`")[1]
+        self.assertNotEqual(id1, id2)
+        # The second publication stores the new content (not a replay of the first).
+        with self.agent_a.sc.connect() as db:
+            _, _, stored = self.agent_a.sc.body(db, id2)
+        self.assertIn("run 2 - different output", stored[0]["content"])
+
+    def test_empty_target_treated_as_no_target(self):
+        res = self.agent_a.call_tool("delm_read_board", {"target": ""})
+        self.assertFalse(res["isError"], res)
+
 
 class TestCliWiring(unittest.TestCase):
     def test_version_flag(self):
@@ -484,6 +528,31 @@ class TestCliWiring(unittest.TestCase):
             capture_output=True, text=True, cwd=str(ROOT),
         )
         self.assertEqual(proc.returncode, 2)
+
+    def test_board_directory_rejected(self):
+        tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, tmp, True)
+        proc = subprocess.run(
+            [sys.executable, "-m", "mcp_server", "--actor", "probe",
+             "--board", str(tmp), "--workspace", str(tmp)],
+            capture_output=True, text=True, cwd=str(ROOT),
+        )
+        self.assertEqual(proc.returncode, 2)
+        self.assertIn("not a regular file", proc.stderr)
+
+    def test_both_databases_use_wal(self):
+        import sqlite3
+        tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, tmp, True)
+        DelmMcpServer(actor="w", board_path=tmp / "b.sqlite",
+                      workspace_path=tmp, peers=["w"])
+        for name in ("b.sqlite", "context-bodies.sqlite"):
+            db = sqlite3.connect(tmp / name)
+            try:
+                self.assertEqual(
+                    db.execute("PRAGMA journal_mode").fetchone()[0], "wal")
+            finally:
+                db.close()
 
     def test_stdio_tools_list_roundtrip(self):
         tmp = Path(tempfile.mkdtemp())
