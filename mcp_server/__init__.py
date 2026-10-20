@@ -1,7 +1,8 @@
 """DeLM Model Context Protocol (MCP) Server.
 
-Provides decentralized multi-agent shared-context coordination over stdio JSON-RPC
-for Codex, Claude Code, OpenCode, Antigravity (AGY), and any other MCP-compliant client.
+Decentralized multi-agent shared-context coordination over stdio JSON-RPC
+for Codex, Claude Code, OpenCode, Antigravity (AGY), and any MCP client.
+Standard library only; no third-party dependencies.
 """
 
-__version__ = "0.1.0"
+__version__ = "1.0.0"

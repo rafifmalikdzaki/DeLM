@@ -70,3 +70,18 @@ echo '{"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVe
 1. **Networked / SSE Transport**: Optionally add Server-Sent Events (SSE) or WebSocket transport if agents run across different physical machines rather than sharing a local filesystem.
 2. **Auto-Cleanup / Ephemeral Sessions**: Add an automated prune/compact command for lingering SQLite event databases between independent runs.
 3. **IDE Notification Hooks**: Integrate board events with desktop notifications or webhooks when a peer completes a dependent task.
+
+---
+
+## v1.0.0 Production Hardening (2026-10-20)
+
+Two correctness bugs were reproduced and fixed, and the server was hardened for real multi-agent use:
+
+- **Fixed `delm_inspect_files` crash**: it iterated the `expand` dict as a list (`TypeError: string indices must be integers`) and read a nonexistent `diff` key. It now renders `text`/`shown` per file with an output cap.
+- **Fixed `delm_apply_files` data loss**: it bypassed the board's apply logic and overwrote local files unconditionally. It now uses `ProtectedBoard.apply` with real local hashes (conflicts refuse with nothing written), atomic stage-and-rename writes with rollback, and `apply_result`/`apply_error` audit events.
+- **Correctness/safety**: `ProtectedBoard` instead of `SharedContext`; workspace confinement (`..`, symlink, credential/cache rejection ported from `board/context_client.py`); generous input length caps; `request_id` idempotency on done/note; new `delm_publish_items` tool; `--baseline` for real diffs; WAL/busy-timeout tuning; structured stderr logging with `--log-level`.
+- **Protocol**: version negotiation (`2024-11-05`, `2025-03-26`, `2025-06-18`), empty `resources/list`/`prompts/list`, notification/batch support, JSON-RPC error codes, Content-Length + NDJSON framing.
+- **Packaging/CLI**: `pyproject.toml` with `delm-mcp` entry point; `python -m mcp_server`; actor/workspace/board validation; SIGTERM graceful shutdown.
+- **Tests**: `tests/test_mcp_server.py` grew from 2 to 31 tests (protocol, validation, publish/claim, baseline diffs, conflict apply, path safety, concurrent reserve, idempotent retries, CLI wiring). Run: `python3 -m unittest tests/test_mcp_server.py -v`.
+
+Key files: `mcp_server/server.py`, `mcp_server/files.py` (new), `mcp_server/cli.py`, `mcp_server/__main__.py` (new), `pyproject.toml` (new), `docs/MCP_SETUP_GUIDE.md` (install + troubleshooting), `docs/MCP_ARCHITECTURE.md`, `README.md`.

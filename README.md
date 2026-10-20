@@ -41,28 +41,30 @@ complete solution.
 
 ## Model Context Protocol (MCP) Server
 
-This repository includes a zero-dependency **Model Context Protocol (MCP)** server ([`mcp_server/cli.py`](mcp_server/cli.py)) that wraps DeLM's decentralized shared-context engine over standard I/O JSON-RPC.
+This repository includes a zero-dependency **Model Context Protocol (MCP)** server ([`mcp_server/`](mcp_server)) that wraps DeLM's decentralized shared-context engine over standard I/O JSON-RPC. Version 1.0.0 is production-hardened: conflict-safe file merging, path confinement, input validation, protocol negotiation, and a 31-test suite.
 
 Any tool-calling agent in **Claude Code**, **OpenAI Codex**, **OpenCode (`oc`)**, or **Antigravity (`agy`)** can attach to a common shared SQLite board to coordinate asynchronously:
 - **Scope Reservation & Claims**: Agents atomically claim work without an orchestrator bottleneck.
 - **Shared Knowledge**: Agents publish verified findings (`FACT`) and disproven hypotheses/blockers (`FAIL`).
-- **File Diff Sharing**: Agents inspect diffs and pull peer solutions directly into their own workspace.
+- **File Diff Sharing**: Agents inspect diffs and pull peer solutions directly into their own workspace. Locally edited files are reported as conflicts instead of being overwritten.
 
 ### Quickstart (MCP)
 
-#### 1. Launch / Verify the MCP Server Directly
+#### 1. Install (one time) or run from the checkout
 ```bash
-python3 mcp_server/cli.py --actor agent-1 --board .delm/board.sqlite --workspace .
+pipx install /path/to/DeLM   # provides the `delm-mcp` command
+delm-mcp --version
+# …or without installing: python3 /path/to/DeLM/mcp_server/cli.py --version
 ```
-*(Requires Python 3.12+; no extra packages or virtual environments needed).*
+*(Requires Python 3.10+; no extra packages or virtual environments needed. No `PYTHONPATH` required.)*
 
 #### 2. Configure Your Coding Assistants
 
-Point multiple agents running on the same machine to the same `--board` path (e.g., `/path/to/project/.delm/board.sqlite`):
+Point multiple agents running on the same machine to the same `--board` path (e.g., `/path/to/project/.delm/board.sqlite`), each with its own `--actor` and `--workspace`:
 
 * **Claude Code**:
   ```bash
-  claude mcp add delm -- python3 /path/to/DeLM/mcp_server/cli.py \
+  claude mcp add delm -- delm-mcp \
     --actor claude-1 \
     --board /path/to/project/.delm/board.sqlite \
     --workspace /path/to/project
@@ -73,9 +75,8 @@ Point multiple agents running on the same machine to the same `--board` path (e.
   {
     "mcpServers": {
       "delm": {
-        "command": "python3",
+        "command": "delm-mcp",
         "args": [
-          "/path/to/DeLM/mcp_server/cli.py",
           "--actor", "codex-1",
           "--board", "/path/to/project/.delm/board.sqlite",
           "--workspace", "/path/to/project"
@@ -90,9 +91,8 @@ Point multiple agents running on the same machine to the same `--board` path (e.
   {
     "mcp": {
       "delm": {
-        "command": "python3",
+        "command": "delm-mcp",
         "args": [
-          "/path/to/DeLM/mcp_server/cli.py",
           "--actor", "oc-1",
           "--board", "/path/to/project/.delm/board.sqlite",
           "--workspace", "/path/to/project"
@@ -107,9 +107,8 @@ Point multiple agents running on the same machine to the same `--board` path (e.
   {
     "mcpServers": {
       "delm": {
-        "command": "python3",
+        "command": "delm-mcp",
         "args": [
-          "/path/to/DeLM/mcp_server/cli.py",
           "--actor", "agy-1",
           "--board", "/path/to/project/.delm/board.sqlite",
           "--workspace", "/path/to/project"
@@ -119,21 +118,24 @@ Point multiple agents running on the same machine to the same `--board` path (e.
   }
   ```
 
+Tip: pass `--baseline /path/to/pristine-checkout` so `delm_inspect_files` shows real diffs against a clean tree.
+
 ### Exposed Coordination Tools
 
-Connected agents automatically gain access to 8 coordination primitives:
-- `delm_read_board`: Read current board state and active tasks with markdown rendering.
+Connected agents automatically gain access to 9 coordination primitives:
+- `delm_read_board`: Read current board state and active tasks with markdown rendering (supports `wait_seconds` and `target`).
 - `delm_reserve_task`: Atomically declare intent, create a scope, and claim an item.
+- `delm_publish_items`: Publish open queue items for any peer to claim.
 - `delm_claim_task`: Claim an existing open task by ID.
-- `delm_complete_task`: Mark a task complete with a solution summary and attached files.
+- `delm_complete_task`: Mark a task complete with a solution summary and attached files (`request_id` for safe retries).
 - `delm_publish_note`: Share verified facts (`FACT`) or blockers/failures (`FAIL`).
 - `delm_update_status`: Publish current agent focus and activity.
 - `delm_inspect_files`: Inspect diffs and files attached by peers (`expand`).
-- `delm_apply_files`: Write a peer's published files into the local workspace (`apply`).
+- `delm_apply_files`: Conflict-checked merge of a peer's files into the local workspace (`apply`).
 
 For in-depth architecture details and sequence diagrams, see:
 - 📖 [MCP Architecture & Technical Reference](docs/MCP_ARCHITECTURE.md)
-- 🛠️ [Detailed Client Setup Guide](docs/MCP_SETUP_GUIDE.md)
+- 🛠️ [Detailed Client Setup Guide](docs/MCP_SETUP_GUIDE.md) (includes a troubleshooting table)
 
 ---
 

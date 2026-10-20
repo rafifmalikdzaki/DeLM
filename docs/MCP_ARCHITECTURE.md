@@ -28,7 +28,7 @@ flowchart TD
     end
 
     subgraph Core ["DeLM Engine (board/)"]
-        SC["SharedContext<br/>(board/shared_context.py)"]
+        SC["ProtectedBoard<br/>(board/protected_board.py)"]
         DB1[("board.sqlite<br/>(Append-only Event Log)")]
         DB2[("context-bodies.sqlite<br/>(File Payloads & Diffs)")]
     end
@@ -48,19 +48,21 @@ flowchart TD
 
 ## 2. Core Implementation Mechanics
 
-The server is implemented in [`mcp_server/server.py`](../mcp_server/server.py) with zero third-party dependencies, running strictly on the Python 3.12+ standard library.
+The server is implemented in [`mcp_server/server.py`](../mcp_server/server.py) with zero third-party dependencies, running strictly on the Python standard library (3.10+). File safety lives in [`mcp_server/files.py`](../mcp_server/files.py), which ports the Docker harness client's (`board/context_client.py`) attach/apply rules to MCP mode.
 
 ### A. Transport & Protocol Framing
 The MCP specification communicates over standard input/output (`stdio`).
-- **Framing**: Supports both HTTP-style header-framed messages (`Content-Length: <n>\r\n\r\n{...}`) and raw newline-delimited JSON.
+- **Framing**: Supports both HTTP-style header-framed messages (`Content-Length: <n>\r\n\r\n{...}`) and raw newline-delimited JSON, including batch arrays.
 - **Protocol Handshake**: Implements standard JSON-RPC 2.0 methods:
-  - `initialize`: Negotiates protocol version (`2024-11-05`), server capabilities, and client identity.
+  - `initialize`: Negotiates the protocol version (supports `2024-11-05`, `2025-03-26`, `2025-06-18`; echoes the client's version when supported, otherwise the newest).
   - `tools/list`: Exposes available coordination tools with complete JSON schema specifications.
   - `tools/call`: Dispatches function calls with validation and error formatting.
+  - `resources/list`, `prompts/list`: Return empty lists (the board exposes neither).
   - `ping`: Health-check keepalive.
+  - Unknown notifications (no `id`) are ignored; unknown requests return `-32601` and unknown tools return `-32602`.
 
 ### B. Shared Context & Dual-Database Storage
-The server wraps [`SharedContext`](../board/shared_context.py), which uses a dual-database pattern:
+The server wraps [`ProtectedBoard`](../board/protected_board.py) (the same hardened board the Docker harness uses), which uses a dual-database pattern:
 1. `board.sqlite`:
    - Append-only event log (`events` table) storing sequence numbers, nanosecond timestamps, actor names, event kinds (`item`, `claim`, `done`, `note`, `status`, `read`, `wait`), and lightweight payloads.
    - Used for synchronization and atomic queue transitions.
@@ -71,25 +73,28 @@ The server wraps [`SharedContext`](../board/shared_context.py), which uses a dua
 
 ### C. Concurrency & Collision Safety
 - **Normalized Deduplication**: Task reservations normalize text (ignoring case and whitespace), preventing two agents from claiming duplicate variants of the same task.
-- **Single-Claim Invariant**: An agent holding an unfinished item is blocked from claiming a second one until the active item is completed or released.
-- **Author Provenance**: Applied files track authorship. Agents cannot accidentally overwrite local work with older peer revisions.
+- **Single-Claim Invariant**: An agent holding an unfinished item is blocked from claiming a second one until the active item is completed.
+- **Conflict-Safe Apply**: `delm_apply_files` goes through `ProtectedBoard.apply` with the caller's real local hashes: files the caller edited (or that another author changed) are reported as `conflict` and **nothing is written**. Granted files are staged to temp files and renamed over the targets with rollback, so a failed apply never leaves a half-written workspace. Every decision is logged as an `apply` event; successes and failures are confirmed via `apply_result`/`apply_error`.
+- **Path Confinement**: Attach/apply paths must stay inside the agent workspace (or under `/tmp`); `..` segments, symlinks, and credential/cache directories (`.env`, keys, `.git`, `node_modules`, …) are rejected before anything reaches the board.
+- **Idempotent Publications**: `delm_complete_task`/`delm_publish_note` accept `request_id`; retries with the same key return the original publication instead of duplicating it (a deterministic key is derived when the client omits one).
 
 ---
 
 ## 3. Tool Reference
 
-The MCP server exposes 8 coordination tools to connected models:
+The MCP server exposes 9 coordination tools to connected models:
 
 | Tool | Action | Primary Arguments | Description |
 | :--- | :--- | :--- | :--- |
-| `delm_read_board` | Read / Poll | `wait_seconds`, `full` | Reads current queue state, peer notes, and statuses. With `wait_seconds > 0`, blocks until a wake event occurs. |
+| `delm_read_board` | Read / Poll | `wait_seconds`, `full`, `target` | Reads current queue state, peer notes, and statuses. With `wait_seconds > 0`, blocks until a wake event occurs. |
 | `delm_reserve_task` | Atomic Scope Claim | `subject`, `detail` | Creates a new task item and claims it atomically. If an equivalent subject already exists, returns existing status. |
+| `delm_publish_items` | Publish Open Work | `items` | Publishes open queue items for any peer to claim, without taking ownership. |
 | `delm_claim_task` | Claim Open Task | `item_id` | Claims an already published open task from the queue. |
-| `delm_complete_task` | Complete Work | `item_id`, `summary`, `attach_paths` | Marks item done, registers completion summary, and attaches workspace files into `context-bodies.sqlite`. |
-| `delm_publish_note` | Share Knowledge | `note_type` (`FACT`/`FAIL`), `text`, `scope`, `basis`, `attach_paths` | Broadcasts discoveries or blockers with reproducible evidence. |
+| `delm_complete_task` | Complete Work | `item_id`, `summary`, `attach_paths`, `request_id` | Marks item done, registers completion summary, and attaches workspace files into `context-bodies.sqlite`. |
+| `delm_publish_note` | Share Knowledge | `note_type` (`FACT`/`FAIL`), `text`, `scope`, `basis`, `attach_paths`, `request_id` | Broadcasts discoveries or blockers with reproducible evidence. |
 | `delm_update_status` | Status Broadcast | `text` | Informs peers of current focus (e.g. `"Investigating memory leak in auth.py"`). |
-| `delm_inspect_files` | Diff Preview | `publication_id`, `paths` | Displays unified diffs against baseline files or full text for newly introduced files. |
-| `delm_apply_files` | Merge Files | `publication_id`, `paths` | Writes files published by a peer into the agent's local workspace. |
+| `delm_inspect_files` | Diff Preview | `publication_id`, `paths` | Displays unified diffs against the baseline (`--baseline`, else the agent workspace) or full text for new files. |
+| `delm_apply_files` | Merge Files | `publication_id`, `paths` | Conflict-checked merge of a peer publication into the local workspace; refused on local edits. |
 
 ---
 
@@ -127,88 +132,35 @@ sequenceDiagram
 
 Each client launches an MCP server process over standard I/O pointing to the same shared SQLite file (`.delm/board.sqlite`).
 
+Install once with `pipx install /path/to/DeLM` (or run uninstalled via `python3 /path/to/DeLM/mcp_server/cli.py`; no `PYTHONPATH` needed). Full per-client JSON is in the [setup guide](MCP_SETUP_GUIDE.md).
+
 ### Claude Code
-Run in terminal:
 ```bash
-claude mcp add delm -- python3 /path/to/DeLM/mcp_server/cli.py \
+claude mcp add delm -- delm-mcp \
   --actor claude-agent \
   --board /shared/project/.delm/board.sqlite \
-  --workspace .
+  --workspace /shared/project/work-claude
 ```
 
-### OpenAI Codex
-Add to `~/.codex/config.json`:
-```json
-{
-  "mcpServers": {
-    "delm": {
-      "command": "python3",
-      "args": [
-        "/path/to/DeLM/mcp_server/cli.py",
-        "--actor", "codex-agent",
-        "--board", "/shared/project/.delm/board.sqlite",
-        "--workspace", "."
-      ],
-      "env": {
-        "PYTHONPATH": "/path/to/DeLM"
-      }
-    }
-  }
-}
-```
+### OpenAI Codex (`~/.codex/config.json`)
+`"command": "delm-mcp"`, args: `--actor codex-agent --board /shared/project/.delm/board.sqlite --workspace /shared/project/work-codex`.
 
-### OpenCode (`oc`)
-Add to `~/.config/opencode/mcp.json`:
-```json
-{
-  "mcp": {
-    "delm": {
-      "command": "python3",
-      "args": [
-        "/path/to/DeLM/mcp_server/cli.py",
-        "--actor", "oc-agent",
-        "--board", "/shared/project/.delm/board.sqlite",
-        "--workspace", "."
-      ],
-      "env": {
-        "PYTHONPATH": "/path/to/DeLM"
-      }
-    }
-  }
-}
-```
+### OpenCode (`~/.config/opencode/mcp.json`)
+`"command": "delm-mcp"`, args: `--actor oc-agent --board /shared/project/.delm/board.sqlite --workspace /shared/project/work-oc`.
 
-### Antigravity (`agy`)
-Add to `~/.gemini/settings.json`:
-```json
-{
-  "mcpServers": {
-    "delm": {
-      "command": "python3",
-      "args": [
-        "/home/dzakirm/AI-Tools/DeLM/mcp_server/cli.py",
-        "--actor", "agy-agent",
-        "--board", ".delm/board.sqlite",
-        "--workspace", "."
-      ],
-      "env": {
-        "PYTHONPATH": "/home/dzakirm/AI-Tools/DeLM"
-      }
-    }
-  }
-}
-```
+### Antigravity (`~/.gemini/settings.json`)
+`"command": "delm-mcp"`, args: `--actor agy-agent --board /shared/project/.delm/board.sqlite --workspace /shared/project/work-agy`.
 
 ---
 
 ## 6. Verification and Diagnostics
 
-1. **Automated Unit & Multi-Agent Tests**:
+1. **Automated Unit & Multi-Agent Tests** (31 tests: protocol, validation, publish/claim, diffs, conflict-safe apply, path safety, idempotency, CLI wiring):
    ```bash
-   PYTHONPATH=. python3 -m unittest tests/test_mcp_server.py -v
+   python3 -m unittest tests/test_mcp_server.py -v
    ```
 2. **Direct CLI Diagnostic**:
    ```bash
    echo '{"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}}' | \
-     PYTHONPATH=. python3 mcp_server/cli.py --actor diag --board /tmp/diag.sqlite --workspace /tmp
+     delm-mcp --actor diag --board /tmp/diag.sqlite --workspace /tmp
    ```

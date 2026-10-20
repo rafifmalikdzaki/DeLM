@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "delm-mcp"
+version = "1.0.0"
+description = "DeLM decentralized multi-agent coordination board as a zero-dependency MCP server"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+keywords = ["mcp", "multi-agent", "codex", "claude-code", "opencode"]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+
+[project.scripts]
+delm-mcp = "mcp_server.cli:main"
+
+[tool.setuptools]
+packages = ["mcp_server", "board"]
