@@ -1,8 +1,10 @@
 """Git-worktree peer spawning for local multi-agent DeLM sessions.
 
 Full Docker isolation is heavy for local runs. This module spawns each peer
-agent into its own git worktree under ``<repo>/.delm/worktrees/<actor>`` on a
-dedicated branch ``delm/<session>/<actor>``. Peers share the object database
+agent into its own **detached** git worktree under
+``<repo>/.delm/worktrees/<actor>``. Detached mode registers zero branches, so
+aborted or finished sessions never linger in ``git branch`` output; removing
+the folder leaves git state completely clean. Peers share the object database
 (cheap) but have fully isolated working files. The shared board SQLite file
 lives outside the worktrees so all peers coordinate through it.
 
@@ -14,7 +16,7 @@ from __future__ import annotations
 import re
 import subprocess
 from pathlib import Path
-from typing import Dict, List
+from typing import Any, Dict, List
 
 NAME_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
 WORKTREES_DIR = Path(".delm/worktrees")
@@ -53,62 +55,46 @@ def repo_root(path: Path) -> Path:
     return Path(run_git(path, "rev-parse", "--show-toplevel").strip())
 
 
-def branch_name(session: str, actor: str) -> str:
-    return f"delm/{check_name('session', session)}/{check_name('actor', actor)}"
-
-
 def worktree_path(repo: Path, actor: str) -> Path:
     return repo / WORKTREES_DIR / check_name("actor", actor)
 
 
-def spawn_peer(repo: Path, session: str, actor: str, base: str = "HEAD") -> Dict[str, str]:
-    """Create an isolated worktree + branch for one peer agent."""
+def spawn_peer(repo: Path, session: str, actor: str, base: str = "HEAD") -> Dict[str, Any]:
+    """Create a detached, zero-branch worktree sandbox for one peer agent."""
     repo = repo_root(repo)
-    branch = branch_name(session, actor)
+    check_name("session", session)
     target = worktree_path(repo, actor)
     if target.exists():
         raise ValueError(f"worktree already exists: {target}")
     target.parent.mkdir(parents=True, exist_ok=True)
-    existing = run_git(repo, "branch", "--list", branch).strip()
-    if existing:
-        run_git(repo, "worktree", "add", str(target), branch)
-    else:
-        run_git(repo, "worktree", "add", "-b", branch, str(target), base)
-    return {"actor": actor, "branch": branch, "path": str(target)}
+    run_git(repo, "worktree", "add", "--detach", str(target), base)
+    return {"actor": actor, "branch": "", "detached": True, "path": str(target)}
 
 
-def remove_peer(repo: Path, session: str, actor: str,
-                delete_branch: bool = True) -> Dict[str, str]:
-    """Remove a peer worktree (and its branch unless it has unique commits)."""
+def remove_peer(repo: Path, session: str, actor: str) -> Dict[str, Any]:
+    """Remove a peer worktree. Nothing else to clean: no branch was created."""
     repo = repo_root(repo)
-    branch = branch_name(session, actor)
+    check_name("session", session)
     target = worktree_path(repo, actor)
     removed = False
     if target.exists():
         run_git(repo, "worktree", "remove", "--force", str(target))
         removed = True
     run_git(repo, "worktree", "prune")
-    deleted_branch = False
-    if delete_branch and run_git(repo, "branch", "--list", branch).strip():
-        merged = run_git(repo, "branch", "--merged", "HEAD").strip().splitlines()
-        if any(line.strip().lstrip("* ") == branch for line in merged):
-            run_git(repo, "branch", "-d", branch)
-            deleted_branch = True
-    return {"actor": actor, "branch": branch, "removed": removed,
-            "deleted_branch": deleted_branch}
+    return {"actor": actor, "removed": removed}
 
 
-def list_peers(repo: Path) -> List[Dict[str, str]]:
+def list_peers(repo: Path) -> List[Dict[str, Any]]:
     """Peer worktrees currently registered under .delm/worktrees/."""
     repo = repo_root(repo)
     out = run_git(repo, "worktree", "list", "--porcelain")
-    entries: List[Dict[str, str]] = []
-    current: Dict[str, str] = {}
+    entries: List[Dict[str, Any]] = []
+    current: Dict[str, Any] = {}
     for line in out.splitlines():
         if line.startswith("worktree "):
             current = {"path": line[len("worktree "):]}
-        elif line.startswith("branch refs/heads/"):
-            current["branch"] = line[len("branch refs/heads/"):]
+        elif line == "detached" and current:
+            current["detached"] = True
         elif line == "" and current:
             entries.append(current)
             current = {}

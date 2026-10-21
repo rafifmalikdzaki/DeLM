@@ -100,7 +100,7 @@ Key files: `mcp_server/server.py`, `mcp_server/files.py` (new), `mcp_server/cli.
 
 All five improvements, each with regression tests; 66 tests green across `test_mcp_server.py`, `test_mercury_worker.py`, `test_worktree.py`, `test_evolve.py`:
 
-1. **Worktree peer spawning** (`runtime/worktree.py`, new): `spawn_peer`/`remove_peer`/`list_peers` isolate local agents in git worktrees on `delm/<session>/<actor>` branches. 6 tests.
+1. **Worktree peer spawning** (`runtime/worktree.py`, new): `spawn_peer`/`remove_peer`/`list_peers` isolate local agents in **detached, zero-branch** git worktrees (mirrors the Harness² fix — no `delm/<session>/<actor>` branches are ever registered). 7 tests including `test_no_branches_ever_registered`.
 2. **Hygiene**: extended attach/apply exclusions (`.harness2`, `.harness_staged`, `.pytest_cache`, `.pyc/.pyo`, `.DS_Store`, `.delm/`, `.board/`) — caught a real case bug (`.ds_store` vs `.DS_Store`) — plus opt-in `--git-exclude` flag that appends `.delm/` to workspace `.git/info/exclude` (never `.gitignore`, off by default).
 3. **Conflict markers**: `delm_apply_files` accepts `on_conflict: "markers"` to write git-style `<<<<<<< LOCAL` / `>>>>>>> PEER` blocks instead of refusing; default `refuse` unchanged.
 4. **Peer verification** (`delm_verify_task`, new tool #10): records independent accept/reject with evidence on completed items. Advisory only, author excluded, new `verify` event kind in `SharedContext` (view + incremental serve; never wakes waits; harness call sites untouched).

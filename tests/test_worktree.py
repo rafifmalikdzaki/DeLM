@@ -38,14 +38,29 @@ class TestWorktree(unittest.TestCase):
     def test_spawn_isolates_peers(self):
         a = spawn_peer(self.repo, "s1", "alpha")
         b = spawn_peer(self.repo, "s1", "beta")
-        self.assertEqual(a["branch"], "delm/s1/alpha")
+        self.assertTrue(a["detached"])
         (Path(a["path"]) / "a.txt").write_text("alpha work\n")
         (Path(b["path"]) / "b.txt").write_text("beta work\n")
         self.assertFalse((Path(a["path"]) / "b.txt").exists())
         self.assertFalse((Path(b["path"]) / "a.txt").exists())
         peers = list_peers(self.repo)
-        self.assertEqual({p["branch"] for p in peers},
-                         {"delm/s1/alpha", "delm/s1/beta"})
+        self.assertEqual({p["path"] for p in peers}, {a["path"], b["path"]})
+        self.assertTrue(all(p.get("detached") for p in peers))
+
+    def test_no_branches_ever_registered(self):
+        branches_before = self._branches()
+        a = spawn_peer(self.repo, "s1", "alpha")
+        self.assertEqual(self._branches(), branches_before)
+        remove_peer(self.repo, "s1", "alpha")
+        self.assertEqual(self._branches(), branches_before)
+        self.assertFalse(Path(a["path"]).exists())
+
+    def _branches(self):
+        out = subprocess.run(
+            ["git", "-C", str(self.repo), "branch", "--list"],
+            capture_output=True, text=True, check=True)
+        return sorted(line.strip().lstrip("* ") for line in out.stdout.splitlines()
+                      if line.strip())
 
     def test_spawn_twice_is_refused(self):
         spawn_peer(self.repo, "s1", "alpha")
