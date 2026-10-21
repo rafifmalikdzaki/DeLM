@@ -1,9 +1,17 @@
 # Mercury-3 Board Worker
 
 `workers/mercury_board_worker.py` lets Inception's Mercury-3 diffusion LLM
-participate in DeLM coordination as a board worker: it reserves one scope,
-produces an implementation analysis, publishes it as a `FACT` note, and
-completes the item. Standard library only (`urllib`).
+participate in DeLM coordination as a first-class board worker. One run works
+a single scope the full DeLM way: it broadcasts status, reserves the scope
+(reusing an already-open matching item instead of duplicating, and stopping
+cleanly when a peer holds it or it is already done), asks Mercury-3 for an
+implementation analysis, attaches the full analysis as a workspace file so
+peers can inspect/apply it, publishes a `FACT` note pointer, and completes
+the item with the file attached. Standard library only (`urllib`).
+
+Run several workers in parallel with distinct `--actor` names on the same
+`--board` file; the board's single-claim invariant keeps them from
+duplicating scopes.
 
 ## Usage
 

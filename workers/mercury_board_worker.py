@@ -125,7 +125,7 @@ def run_worker(
     max_tokens: int = 2000,
     dry_run: bool = False,
 ) -> Dict[str, Any]:
-    """Reserve a scope, get Mercury-3's analysis, publish it, complete the item."""
+    """Work one scope the full DeLM way: status, reserve, analyze, attach, done."""
     if not subject.strip() or not detail.strip():
         raise ValueError("subject and detail must be non-empty text")
     messages = [
@@ -145,12 +145,27 @@ def run_worker(
     server = DelmMcpServer(
         actor=actor, board_path=board, workspace_path=workspace, peers=[actor]
     )
+    status = server.call_tool(
+        "delm_update_status", {"text": f"Mercury analyzing: {subject[:200]}"})
+    if status["isError"]:
+        return {"ok": False, "stage": "status", "detail": status}
     reserve = server.call_tool(
         "delm_reserve_task", {"subject": subject, "detail": detail}
     )
     if reserve["isError"]:
         return {"ok": False, "stage": "reserve", "detail": reserve}
-    item_id = reserve["content"][0]["text"].split("task `")[1].split("`")[0]
+    reserve_text = reserve["content"][0]["text"]
+    item_id = reserve_text.split("task `")[1].split("`")[0]
+    if "Already owned" in reserve_text:
+        # Same scope already finished or held by a peer: duplicating it
+        # would violate the board invariant. Read structured state (not the
+        # rendered text) to report which case this is.
+        view = server.sc.read(actor, full=True)
+        state = next((i.get("state") for i in view.get("queue", [])
+                      if i.get("id") == item_id), "unknown")
+        stage = "already-done" if state == "done" else "already-claimed"
+        return {"ok": True, "stage": stage, "item_id": item_id,
+                "detail": reserve_text[:500]}
     body = chat_completion(key, messages, model, reasoning_effort, temperature,
                            max_tokens)
     analysis = assistant_text(body).strip()
@@ -158,21 +173,33 @@ def run_worker(
         raise ValueError("Mercury API returned an empty analysis")
     usage = body.get("usage", {})
 
+    # The full analysis travels as an attached workspace file so peers can
+    # inspect and apply it; the note carries only a concise pointer.
+    filename = f"delm-mercury-{item_id[:8]}.md"
+    (workspace / filename).write_text(
+        f"# Mercury-3 analysis: {subject}\n\n{analysis}\n", encoding="utf-8")
     note = server.call_tool("delm_publish_note", {
         "note_type": "FACT",
-        "text": f"Mercury-3 analysis for '{subject}': {analysis[:1500]}",
+        "text": (f"Mercury-3 analysis for '{subject}' "
+                 f"(full text in attached {filename}): {analysis[:1200]}"),
         "scope": subject[:300],
         "basis": f"Single {model} ({reasoning_effort} effort) analysis call",
+        "attach_paths": [filename],
     })
     if note["isError"]:
         return {"ok": False, "stage": "note", "detail": note}
     done = server.call_tool("delm_complete_task", {
         "item_id": item_id,
-        "summary": f"Mercury-3 plan published for '{subject}'. Full analysis in board note.",
+        "summary": (f"Mercury-3 plan published for '{subject}'. "
+                    f"Full analysis in attached {filename}."),
+        "attach_paths": [filename],
     })
     if done["isError"]:
         return {"ok": False, "stage": "done", "detail": done}
-    return {"ok": True, "stage": "done", "item_id": item_id, "usage": usage}
+    publication_id = done["content"][0]["text"].split("Publication ID: `")[1].split("`")[0]
+    return {"ok": True, "stage": "done", "item_id": item_id,
+            "publication_id": publication_id, "analysis_file": filename,
+            "usage": usage}
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -217,7 +244,13 @@ def main(argv: Optional[List[str]] = None) -> int:
         print(f"mercury-worker: failed at {result.get('stage')}", file=sys.stderr)
         print(json.dumps(result.get("detail"), indent=2)[:2000], file=sys.stderr)
         return 1
-    print(f"Completed {result['item_id']}; Mercury usage: {result.get('usage')}")
+    if result.get("stage") in ("already-done", "already-claimed"):
+        print(f"Nothing to do ({result['stage']}): {result['item_id']}")
+        return 0
+    print(f"Completed {result['item_id']} "
+          f"(publication {result.get('publication_id')}, "
+          f"file {result.get('analysis_file')}); "
+          f"Mercury usage: {result.get('usage')}")
     return 0
 
 

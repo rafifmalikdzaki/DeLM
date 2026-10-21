@@ -56,12 +56,48 @@ class TestMercuryWorker(unittest.TestCase):
         self.assertFalse(self.board.exists())
 
     def test_full_flow_publishes_and_completes(self):
+        # >1200 chars: the file must keep it all (note text is only a pointer).
+        long_analysis = ("do X then Y. " * 300).strip()
         with mock.patch("urllib.request.urlopen",
-                        fake_urlopen(fake_body("do X then Y"))):
+                        fake_urlopen(fake_body(long_analysis))):
             result = self.run_case()
         self.assertTrue(result, result)
         self.assertTrue(result["ok"])
         self.assertEqual(result["usage"]["total_tokens"], 30)
+        # Full analysis travels as an attached file, untruncated.
+        attached = self.ws / result["analysis_file"]
+        self.assertTrue(attached.is_file())
+        self.assertIn(long_analysis, attached.read_text())
+        from mcp_server.server import DelmMcpServer
+        reader = DelmMcpServer(actor="reader", board_path=self.board,
+                               workspace_path=self.ws, peers=["reader", "m1"])
+        with reader.sc.connect() as db:
+            _, _, stored = reader.sc.body(db, result["publication_id"])
+        self.assertIn(long_analysis, stored[0]["content"])
+
+    def test_second_run_reports_already_done_without_api_call(self):
+        http = fake_urlopen(fake_body("plan"))
+        with mock.patch("urllib.request.urlopen", http):
+            first = self.run_case()
+            second = self.run_case()
+        self.assertEqual(first["stage"], "done")
+        self.assertEqual(second["stage"], "already-done")
+        self.assertTrue(second["ok"])
+        self.assertEqual(http.call_count, 1)
+
+    def test_peer_held_scope_is_not_duplicated(self):
+        from mcp_server.server import DelmMcpServer
+        peer = DelmMcpServer(actor="peer", board_path=self.board,
+                             workspace_path=self.ws, peers=["peer", "m1"])
+        self.assertFalse(peer.call_tool(
+            "delm_reserve_task",
+            {"subject": "S", "detail": "D"})["isError"])
+        http = fake_urlopen(fake_body("plan"))
+        with mock.patch("urllib.request.urlopen", http):
+            result = self.run_case()
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["stage"], "already-claimed")
+        http.assert_not_called()
 
     def test_request_shape(self):
         seen = {}
