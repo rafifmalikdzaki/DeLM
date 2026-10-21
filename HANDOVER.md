@@ -95,3 +95,9 @@ Key files: `mcp_server/server.py`, `mcp_server/files.py` (new), `mcp_server/cli.
 - **Containerized**: `mcp_server/Dockerfile` (`python:3.12-slim`, non-root uid 10001, `delm-mcp` entrypoint) added; verified two containers coordinating (reserve → complete+attach → read → inspect → apply) over a bind-mounted board. Client `docker run -i` config documented in `docs/MCP_SETUP_GUIDE.md` §8.
 - No DeLM-repo MCP processes were running (the 13 matches were Harness²'s `mcp_server.py`, a different project — left untouched).
 - Tests: 36 passing (`python3 -m unittest tests/test_mcp_server.py`).
+
+### Mercury-3 board worker (2026-10-21)
+
+- `workers/mercury_board_worker.py` (new, stdlib only): reserves one board scope, asks Mercury-3 (`POST https://api.inceptionlabs.ai/v1/chat/completions`, OpenAI-compatible, verified against official docs) for an implementation analysis, publishes it as a `FACT` note, and completes the item. Never writes model output to files.
+- Key handling: `INCEPTION_API_KEY` from environment or gitignored local `.env`, never printed/logged/committed. The key pasted in chat should be rotated.
+- Verified: 7 mocked offline tests (`tests/test_mercury_worker.py`, zero spend) plus a live end-to-end run on a scratch board (1,483 tokens: reserve → FACT note → done, all visible via `delm_read_board`). Usage: `docs/MERCURY_WORKER.md`.

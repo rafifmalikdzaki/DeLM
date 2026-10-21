@@ -136,6 +136,7 @@ Connected agents automatically gain access to 9 coordination primitives:
 For in-depth architecture details and sequence diagrams, see:
 - 📖 [MCP Architecture & Technical Reference](docs/MCP_ARCHITECTURE.md)
 - 🛠️ [Detailed Client Setup Guide](docs/MCP_SETUP_GUIDE.md) (includes a troubleshooting table)
+- ⚡ [Mercury-3 Board Worker](docs/MERCURY_WORKER.md) (Inception diffusion LLM as a board worker)
 
 ---
 
