@@ -82,9 +82,9 @@ The server wraps [`ProtectedBoard`](../board/protected_board.py) (the same harde
 
 ## 3. Tool Reference
 
-The MCP server exposes 9 coordination tools to connected models. Board text renders
+The MCP server exposes 10 coordination tools to connected models. Board text renders
 full item and publication ids: they are the handles agents pass back to
-`delm_claim_task`, `delm_inspect_files`, and `delm_apply_files`.
+`delm_claim_task`, `delm_inspect_files`, `delm_apply_files`, and `delm_verify_task`.
 
 | Tool | Action | Primary Arguments | Description |
 | :--- | :--- | :--- | :--- |
@@ -94,9 +94,10 @@ full item and publication ids: they are the handles agents pass back to
 | `delm_claim_task` | Claim Open Task | `item_id` | Claims an already published open task from the queue. |
 | `delm_complete_task` | Complete Work | `item_id`, `summary`, `attach_paths`, `request_id` | Marks item done, registers completion summary, and attaches workspace files into `context-bodies.sqlite`. |
 | `delm_publish_note` | Share Knowledge | `note_type` (`FACT`/`FAIL`), `text`, `scope`, `basis`, `attach_paths`, `request_id` | Broadcasts discoveries or blockers with reproducible evidence. |
+| `delm_verify_task` | Peer Verification | `item_id`, `verdict`, `evidence` | Records an independent accept/reject check of a completed item; advisory only, author excluded. |
 | `delm_update_status` | Status Broadcast | `text` | Informs peers of current focus (e.g. `"Investigating memory leak in auth.py"`). |
 | `delm_inspect_files` | Diff Preview | `publication_id`, `paths` | Displays unified diffs against the baseline (`--baseline`, else the agent workspace) or full text for new files. |
-| `delm_apply_files` | Merge Files | `publication_id`, `paths` | Conflict-checked merge of a peer publication into the local workspace; refused on local edits. |
+| `delm_apply_files` | Merge Files | `publication_id`, `paths`, `on_conflict` | Conflict-checked merge of a peer publication into the local workspace; refused on local edits unless `on_conflict: "markers"` writes git-style conflict blocks. |
 
 ---
 
@@ -157,7 +158,7 @@ claude mcp add delm -- delm-mcp \
 
 ## 6. Verification and Diagnostics
 
-1. **Automated Unit & Multi-Agent Tests** (31 tests: protocol, validation, publish/claim, diffs, conflict-safe apply, path safety, idempotency, CLI wiring):
+1. **Automated Unit & Multi-Agent Tests** (60+ tests: protocol, validation, publish/claim, diffs, conflict-safe apply, markers merge, path safety, verification, idempotency, CLI wiring, worktree isolation, lessons harvest):
    ```bash
    python3 -m unittest tests/test_mcp_server.py -v
    ```

@@ -122,16 +122,17 @@ Tip: pass `--baseline /path/to/pristine-checkout` so `delm_inspect_files` shows 
 
 ### Exposed Coordination Tools
 
-Connected agents automatically gain access to 9 coordination primitives:
+Connected agents automatically gain access to 10 coordination primitives:
 - `delm_read_board`: Read current board state and active tasks with markdown rendering (supports `wait_seconds` and `target`).
 - `delm_reserve_task`: Atomically declare intent, create a scope, and claim an item.
 - `delm_publish_items`: Publish open queue items for any peer to claim.
 - `delm_claim_task`: Claim an existing open task by ID.
 - `delm_complete_task`: Mark a task complete with a solution summary and attached files (`request_id` for safe retries).
 - `delm_publish_note`: Share verified facts (`FACT`) or blockers/failures (`FAIL`).
+- `delm_verify_task`: Record an independent peer accept/reject check with evidence.
 - `delm_update_status`: Publish current agent focus and activity.
 - `delm_inspect_files`: Inspect diffs and files attached by peers (`expand`).
-- `delm_apply_files`: Conflict-checked merge of a peer's files into the local workspace (`apply`).
+- `delm_apply_files`: Conflict-checked merge of a peer's files into the local workspace (`apply`), or `on_conflict: "markers"` for git-style conflict blocks.
 
 For in-depth architecture details and sequence diagrams, see:
 - 📖 [MCP Architecture & Technical Reference](docs/MCP_ARCHITECTURE.md)

@@ -96,6 +96,17 @@ Key files: `mcp_server/server.py`, `mcp_server/files.py` (new), `mcp_server/cli.
 - No DeLM-repo MCP processes were running (the 13 matches were Harness²'s `mcp_server.py`, a different project — left untouched).
 - Tests: 36 passing (`python3 -m unittest tests/test_mcp_server.py`).
 
+### Harness²-inspired hardening (2026-10-21)
+
+All five improvements, each with regression tests; 66 tests green across `test_mcp_server.py`, `test_mercury_worker.py`, `test_worktree.py`, `test_evolve.py`:
+
+1. **Worktree peer spawning** (`runtime/worktree.py`, new): `spawn_peer`/`remove_peer`/`list_peers` isolate local agents in git worktrees on `delm/<session>/<actor>` branches. 6 tests.
+2. **Hygiene**: extended attach/apply exclusions (`.harness2`, `.harness_staged`, `.pytest_cache`, `.pyc/.pyo`, `.DS_Store`, `.delm/`, `.board/`) — caught a real case bug (`.ds_store` vs `.DS_Store`) — plus opt-in `--git-exclude` flag that appends `.delm/` to workspace `.git/info/exclude` (never `.gitignore`, off by default).
+3. **Conflict markers**: `delm_apply_files` accepts `on_conflict: "markers"` to write git-style `<<<<<<< LOCAL` / `>>>>>>> PEER` blocks instead of refusing; default `refuse` unchanged.
+4. **Peer verification** (`delm_verify_task`, new tool #10): records independent accept/reject with evidence on completed items. Advisory only, author excluded, new `verify` event kind in `SharedContext` (view + incremental serve; never wakes waits; harness call sites untouched).
+5. **Lessons** (`workers/evolve.py`, new): harvests FACT/FAIL notes into persistent `.delm/knowledge.db` (dedupe by fingerprint) and prints a seed block for the next session.
+- Docs: setup guide (§5 tools, flags, §8 Docker), architecture table, README (10 tools).
+
 ### Mercury-3 board worker (2026-10-21)
 
 - `workers/mercury_board_worker.py` (new, stdlib only): reserves one board scope, asks Mercury-3 (`POST https://api.inceptionlabs.ai/v1/chat/completions`, OpenAI-compatible, verified against official docs) for an implementation analysis, publishes it as a `FACT` note, and completes the item. Never writes model output to files.

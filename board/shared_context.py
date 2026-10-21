@@ -24,6 +24,7 @@ from pathlib import Path, PurePosixPath
 FILE_LIMITS = dict(files=40, total_bytes=400_000, file_bytes=200_000)
 SCRATCH_ROOT = "/tmp"           # attached paths are relative to the workspace, or absolute under this root
 NOTE_TYPES = ("FACT", "FAIL")
+VERDICTS = ("accept", "reject")
 SYSTEM = "system"
 # A waiting read is one blocking shell command; the native harness cuts a tool call
 # off after about 31 s, so the board never holds one longer than this.
@@ -189,10 +190,12 @@ class SharedContext:
         for note in notes:
             if note["id"] in attached:
                 note["files"] = attached[note["id"]]
+        verifications = [dict(payload, actor=actor)
+                         for actor, _, payload in self.events(db, "verify")]
         return dict(reader=reader, agents=list(self.actors),
                     sessions=[dict(actor=a, state=sessions[a]) for a in self.actors],
                     status=[dict(actor=a, text=current[a]) for a in self.actors if a in current],
-                    queue=queue, notes=notes,
+                    queue=queue, notes=notes, verifications=verifications,
                     sequence=self.last_sequence(db))
 
     @staticmethod
@@ -218,7 +221,7 @@ class SharedContext:
                 "SELECT actor, kind, payload FROM events WHERE sequence > ?", (previous,)
             ):
                 payload = json.loads(row["payload"])
-                if row["kind"] in ("item", "note", "body"):
+                if row["kind"] in ("item", "note", "body", "verify"):
                     changed.add(payload["id"])
                 elif row["kind"] in ("claim", "done"):
                     changed.add(payload["item"])
@@ -228,6 +231,7 @@ class SharedContext:
             result["queue"] = [i if i["id"] in changed else self.compact(i)
                                for i in result["queue"] if i["id"] in changed or (listed and i["state"] != "done")]
             result["notes"] = [n for n in result["notes"] if n["id"] in changed]
+            result["verifications"] = [v for v in result["verifications"] if v["id"] in changed]
             result["status"] = [s for s in result["status"] if s["actor"] in statuses]
         self.append(db, actor, "read", dict(view=result, via=via))
         return result
@@ -470,6 +474,31 @@ class SharedContext:
             if checked:
                 self.register(db, actor, publication_id, checked)
             return self.publication_response(db, actor, row, "note")
+
+    def verify(self, actor, item_id, verdict, evidence):
+        """Record a peer's independent check of a completed item.
+
+        Verification is advisory: it never changes ownership or completion,
+        and it never wakes a waiting read. The author cannot verify their
+        own item; independence is the point.
+        """
+        if verdict not in VERDICTS:
+            raise BoardError("verdict must be accept or reject")
+        evidence = limited("verify_evidence", evidence)
+        with self.connect() as db:
+            self.check_actor(actor)
+            target = next((i for i in self.queue_state(db) if i["id"] == item_id), None)
+            if target is None:
+                raise BoardError("unknown item")
+            if target["state"] != "done":
+                raise BoardError("only a completed item can be verified")
+            if actor == target.get("owner"):
+                raise BoardError("the author cannot verify their own item")
+            payload = dict(id=uuid.uuid4().hex, item=item_id,
+                           verdict=verdict, evidence=evidence)
+            self.append(db, actor, "verify", payload)
+            return dict(verification_id=payload["id"],
+                        view=self.served(db, actor, "verify"))
 
     def stop(self):
         """Release waiting reads before the server shuts down."""

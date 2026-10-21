@@ -14,6 +14,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
 import re
 import sqlite3
 import sys
@@ -124,6 +125,18 @@ def format_view(view: Dict[str, Any]) -> str:
         for s in statuses:
             lines.append(f"- **{s.get('actor')}**: {s.get('text')}")
 
+    verifications = view.get("verifications", [])
+    if verifications:
+        subjects = {i.get("id"): i.get("subject", "?") for i in view.get("queue", [])}
+        lines.append(f"\n**Peer Verifications ({len(verifications)}):**")
+        for v in verifications:
+            icon = "✅" if v.get("verdict") == "accept" else "❌"
+            lines.append(
+                f"- {icon} **{v.get('actor')}** {v.get('verdict')}d "
+                f"`{v.get('item', '')}` ({subjects.get(v.get('item'), '?')}): "
+                f"{v.get('evidence', '')}"
+            )
+
     return "\n".join(lines)
 
 
@@ -138,6 +151,8 @@ def err_result(text: str) -> Dict[str, Any]:
 class DelmMcpServer:
     """MCP stdio server backed by DeLM's protected shared-context board."""
 
+    GIT_EXCLUDE_LINES = (".delm/",)
+
     def __init__(
         self,
         actor: str,
@@ -145,11 +160,14 @@ class DelmMcpServer:
         workspace_path: Path,
         peers: Optional[List[str]] = None,
         baseline_path: Optional[Path] = None,
+        git_exclude: bool = False,
     ):
         self.actor = validate_actor_name(actor)
         self.board_path = Path(board_path).resolve()
         self.workspace_path = Path(workspace_path).resolve()
         self.baseline_path = Path(baseline_path).resolve() if baseline_path else None
+        if git_exclude:
+            self._ensure_git_exclude()
         if peers:
             self.peers = list(dict.fromkeys(peers))
         else:
@@ -181,6 +199,32 @@ class DelmMcpServer:
     def stop(self) -> None:
         """Release any waiting read so the server can shut down promptly."""
         self.sc.stop()
+
+    def _ensure_git_exclude(self) -> None:
+        """Opt-in: keep the board dir out of the workspace's git status.
+
+        Appends missing lines to ``.git/info/exclude`` (never touches
+        ``.gitignore``). Best-effort: any failure is logged, never raised,
+        so a non-repo workspace starts normally.
+        """
+        try:
+            git_dir = self.workspace_path / ".git"
+            if not git_dir.is_dir():
+                return
+            exclude = git_dir / "info" / "exclude"
+            existing = (exclude.read_text(encoding="utf-8").splitlines()
+                        if exclude.is_file() else [])
+            missing = [l for l in self.GIT_EXCLUDE_LINES if l not in existing]
+            if not missing:
+                return
+            exclude.parent.mkdir(parents=True, exist_ok=True)
+            with exclude.open("a", encoding="utf-8") as handle:
+                if existing and not existing[-1].strip() == "":
+                    handle.write("\n")
+                handle.write("".join(f"{line}\n" for line in missing))
+            log.info("added %s to %s", ", ".join(missing), exclude)
+        except OSError as error:  # pragma: no cover - best effort only
+            log.warning("git exclude update skipped: %s", error)
 
     # ---- workspace access ------------------------------------------------
 
@@ -388,6 +432,30 @@ class DelmMcpServer:
                 },
             },
             {
+                "name": "delm_verify_task",
+                "description": "Independently verify a peer's completed item: re-check the diff against the requirements and record accept/reject with evidence. Advisory only; never changes ownership. You cannot verify your own item.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "item_id": {
+                            "type": "string",
+                            "description": "ID of the completed item to verify",
+                        },
+                        "verdict": {
+                            "type": "string",
+                            "enum": ["accept", "reject"],
+                            "description": "accept when the work holds up, reject with concrete counter-evidence otherwise",
+                        },
+                        "evidence": {
+                            "type": "string",
+                            "description": "What you checked and the outcome (tests run, diff reviewed)",
+                            "maxLength": 2000,
+                        },
+                    },
+                    "required": ["item_id", "verdict", "evidence"],
+                },
+            },
+            {
                 "name": "delm_update_status",
                 "description": "Broadcast your current focus (e.g. 'Investigating race condition in auth.py').",
                 "inputSchema": {
@@ -437,6 +505,12 @@ class DelmMcpServer:
                             "type": "array",
                             "items": {"type": "string"},
                             "description": "Optional subset of file paths to apply. If omitted, applies all files in the publication.",
+                        },
+                        "on_conflict": {
+                            "type": "string",
+                            "enum": ["refuse", "markers"],
+                            "description": "How to handle files you changed locally: 'refuse' (default) writes nothing; 'markers' writes git-style conflict blocks so you can merge by hand.",
+                            "default": "refuse",
                         },
                     },
                     "required": ["publication_id"],
@@ -603,6 +677,19 @@ class DelmMcpServer:
                 f"({attached} files attached).\n\n{format_view(res.get('view', {}))}"
             )
 
+        elif name == "delm_verify_task":
+            item_id = checked_id("item_id", arguments.get("item_id"))
+            verdict = arguments.get("verdict")
+            if verdict not in ("accept", "reject"):
+                raise BoardError("verdict must be either 'accept' or 'reject'")
+            evidence = checked_text("evidence", arguments.get("evidence"), 2000)
+            res = self.sc.verify(self.actor, item_id, verdict, evidence)
+            return ok_result(
+                f"Recorded {verdict} on `{item_id}` "
+                f"(verification `{res.get('verification_id')}`).\n\n"
+                f"{format_view(res.get('view', {}))}"
+            )
+
         elif name == "delm_update_status":
             text = checked_text("status", arguments.get("text"), MAX_STATUS_CHARS)
             res = self.sc.status(self.actor, text)
@@ -620,6 +707,9 @@ class DelmMcpServer:
         elif name == "delm_apply_files":
             pub_id = checked_id("publication_id", arguments.get("publication_id"))
             paths = arguments.get("paths")
+            strategy = arguments.get("on_conflict", "refuse")
+            if strategy not in ("refuse", "markers"):
+                raise BoardError("on_conflict must be 'refuse' or 'markers'")
             board_paths = self._board_path_subset(paths)
             if board_paths is None:
                 with self.sc.connect() as db:
@@ -630,6 +720,8 @@ class DelmMcpServer:
                 paths=board_paths if paths else None,
             )
             if not decision.get("applied"):
+                if strategy == "markers":
+                    return self._apply_with_markers(pub_id, decision, board_paths)
                 return err_result(self._render_conflict(pub_id, decision))
             granted = decision.get("files", [])
             written: List[str] = []
@@ -689,11 +781,63 @@ class DelmMcpServer:
             total += len(body)
         return "\n".join(lines)
 
+    def _apply_with_markers(self, pub_id: str, decision: Dict[str, Any],
+                            board_paths: List[str]) -> Dict[str, Any]:
+        """Write granted files plus git-style conflict blocks for the rest.
+
+        The caller explicitly opted in via ``on_conflict='markers'``. The
+        prior ``apply`` audit event already records which paths were
+        conflicts; the success recorded here reflects that the merge
+        markers — not silent overwrites — were written.
+        """
+        with self.sc.connect() as db:
+            author, _, attached = self.sc.body(db, pub_id)
+            by_path = {f["path"]: f for f in attached}
+        entries, marked = [], []
+        for path in board_paths:
+            verdict = decision.get("decisions", {}).get(path)
+            if verdict in ("write",):
+                entries.append(next(
+                    f for f in decision.get("files", []) if f["path"] == path))
+            elif verdict == "conflict":
+                incoming = by_path[path]["content"]
+                local_target = self.workspace_path / path
+                try:
+                    local = (local_target.read_text(encoding="utf-8")
+                             if local_target.is_file() else "(absent in workspace)\n")
+                except OSError:
+                    local = "(unreadable in workspace)\n"
+                if not local.endswith("\n"):
+                    local += "\n"
+                text = (f"<<<<<<< LOCAL (workspace)\n{local}"
+                        f"=======\n{incoming}"
+                        f"{'' if incoming.endswith(chr(10)) else chr(10)}"
+                        f">>>>>>> PEER {author} {pub_id[:8]}\n")
+                mode = "x" if (local_target.is_file() and os.access(local_target, os.X_OK)) else "-"
+                entries.append({"path": path, "content": text, "mode": mode})
+                marked.append(path)
+        written: List[str] = []
+        try:
+            written = atomic_write_files(entries, self.workspace_path)
+        except BoardError as error:
+            self.sc.apply_error(self.actor, pub_id, f"{type(error).__name__}: {error}")
+            self.sc.apply_result(self.actor, pub_id, written, False)
+            return err_result(
+                f"Marker merge failed while writing: {error}. "
+                f"Partial writes were rolled back ({len(written)} files kept)."
+            )
+        self.sc.apply_result(self.actor, pub_id, written, True)
+        lines = [f"Merged {len(written)} file(s) from author `{author}` with conflict markers:"]
+        lines += [f"- `{p}`" for p in written]
+        if marked:
+            lines.append("Resolve the `<<<<<<<` / `>>>>>>>` blocks, then publish your reconciled version.")
+        return ok_result("\n".join(lines))
+
     @staticmethod
     def _render_conflict(pub_id: str, decision: Dict[str, Any]) -> str:
         lines = [
             f"Apply of `{pub_id}` refused: {len(decision.get('decisions', {}))} file(s) need local reconciliation. Nothing was written.",
-            "Inspect the peer version with delm_inspect_files, reconcile locally, then retry.",
+            "Inspect the peer version with delm_inspect_files, reconcile locally, then retry — or retry with on_conflict='markers' to get git-style conflict blocks.",
         ]
         for path, verdict in decision.get("decisions", {}).items():
             if verdict == "conflict":

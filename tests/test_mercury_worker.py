@@ -137,6 +137,7 @@ class TestMercuryWorker(unittest.TestCase):
     def test_http_error_becomes_value_error(self):
         error = urllib.error.HTTPError(
             "https://x", 429, "Too Many Requests", {}, io.BytesIO(b"slow down"))
+        self.addCleanup(error.close)
         with mock.patch("urllib.request.urlopen", side_effect=error):
             with self.assertRaises(ValueError) as ctx:
                 chat_completion("k", [{"role": "user", "content": "hi"}])

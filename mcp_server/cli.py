@@ -59,6 +59,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Transport to serve (only 'stdio' is supported)",
     )
     parser.add_argument(
+        "--git-exclude",
+        action="store_true",
+        help="Append .delm/ to the workspace .git/info/exclude so the board never dirties git status",
+    )
+    parser.add_argument(
         "--log-level",
         choices=VALID_LOG_LEVELS,
         default=os.environ.get("DELM_LOG_LEVEL", "INFO"),
@@ -113,6 +118,7 @@ def main(argv: list[str] | None = None) -> int:
             workspace_path=workspace,
             peers=args.peers,
             baseline_path=baseline,
+            git_exclude=args.git_exclude,
         )
     except (ValueError, OSError, sqlite3.Error) as error:
         print(f"delm-mcp: cannot open board {board}: {error}", file=sys.stderr)

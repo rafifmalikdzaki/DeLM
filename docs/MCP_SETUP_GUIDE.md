@@ -47,6 +47,10 @@ python3 /path/to/DeLM/mcp_server/cli.py --actor <AGENT_NAME> --board <PATH_TO_SH
 * `DELM_BASELINE`: Optional pristine-checkout root used to diff peer files (see §6).
 * `DELM_LOG_LEVEL`: Stderr log verbosity, one of `DEBUG INFO WARNING ERROR` (default: `INFO`).
 
+**Flags:**
+* `--baseline DIR`: pristine checkout used to diff peer files.
+* `--git-exclude`: append `.delm/` to the workspace `.git/info/exclude` so the shared board never dirties `git status` (off by default; never touches `.gitignore`).
+
 ---
 
 ## 4. Configuration by Client
@@ -151,17 +155,18 @@ Add the DeLM server to your Antigravity settings in `~/.gemini/settings.json` un
 
 ## 5. Exposed Tools
 
-Agents connected to the DeLM MCP server gain access to these 9 coordination tools:
+Agents connected to the DeLM MCP server gain access to these 10 coordination tools:
 
-1. `delm_read_board`: Read current tasks, peer notes, and status updates (supports optional waiting with `wait_seconds` up to 25, and `target` to wait for a specific item).
+1. `delm_read_board`: Read current tasks, peer notes, verification votes, and status updates (supports optional waiting with `wait_seconds` up to 25, and `target` to wait for a specific item).
 2. `delm_reserve_task`: Declare a new scope and atomically claim it.
 3. `delm_publish_items`: Publish open queue items for any peer to claim (the initial split of work).
 4. `delm_claim_task`: Claim an existing open task by ID.
 5. `delm_complete_task`: Mark a task complete with a solution summary and optional attached files. Accepts `request_id` for safe retries.
 6. `delm_publish_note`: Share a verified finding (`FACT`) or a disproven approach/blocker (`FAIL`). Accepts `request_id` for safe retries.
-7. `delm_update_status`: Publish current agent focus or blockers.
-8. `delm_inspect_files`: Preview diffs (against the baseline, §6) and file changes published by peers.
-9. `delm_apply_files`: Merge a peer's published files into the local workspace. Files you edited locally are reported as conflicts and **nothing is written** until you reconcile them.
+7. `delm_verify_task`: Independently verify a peer's completed item (`accept`/`reject` with evidence). Advisory only; you cannot verify your own item.
+8. `delm_update_status`: Publish current agent focus or blockers.
+9. `delm_inspect_files`: Preview diffs (against the baseline, §6) and file changes published by peers.
+10. `delm_apply_files`: Merge a peer's published files into the local workspace. Files you edited locally are reported as conflicts and **nothing is written** until you reconcile them — or pass `on_conflict: "markers"` to get git-style conflict blocks for manual merging.
 
 ---
 
@@ -193,7 +198,7 @@ Either way, `delm_apply_files` still merges correctly.
 | `delm_apply_files` reports CONFLICT | Expected safety behavior, not a bug: inspect the peer version with `delm_inspect_files`, reconcile locally, retry. Nothing was overwritten. |
 | Board file grows forever | The board is an append-only log. Archive it between runs: stop agents, move `.delm/board.sqlite*` aside, restart. |
 
-**Self-check** (verifies install, protocol, and all 9 tools in one shot):
+**Self-check** (verifies install, protocol, and all 10 tools in one shot):
 
 ```bash
 echo '{"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}}' \

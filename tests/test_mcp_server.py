@@ -289,6 +289,60 @@ class TestProtocolCompliance(unittest.TestCase):
         self.assertEqual(resp[1]["error"]["code"], -32601)
 
 
+class TestPeerVerification(unittest.TestCase):
+    def setUp(self):
+        self.temp_dir, _, _, self.agent_a, self.agent_b = make_servers()
+        self.addCleanup(shutil.rmtree, self.temp_dir, True)
+
+    def _completed_item(self):
+        self.agent_a.call_tool(
+            "delm_reserve_task", {"subject": "V", "detail": "d"})
+        item_id = self.agent_a.sc.read("agent-alpha", full=True)["queue"][0]["id"]
+        done = self.agent_a.call_tool("delm_complete_task", {
+            "item_id": item_id, "summary": "s"})
+        self.assertFalse(done["isError"], done)
+        return item_id
+
+    def test_accept_flow_visible_to_author(self):
+        item_id = self._completed_item()
+        res = self.agent_b.call_tool("delm_verify_task", {
+            "item_id": item_id, "verdict": "accept",
+            "evidence": "Re-ran pytest, 12 passed; diff matches spec"})
+        self.assertFalse(res["isError"], res)
+        text = self.agent_a.call_tool(
+            "delm_read_board", {"full": True})["content"][0]["text"]
+        self.assertIn("Peer Verifications", text)
+        self.assertIn("agent-beta", text)
+
+    def test_reject_flow(self):
+        item_id = self._completed_item()
+        res = self.agent_b.call_tool("delm_verify_task", {
+            "item_id": item_id, "verdict": "reject",
+            "evidence": "Test test_x fails: KeyError on empty input"})
+        self.assertFalse(res["isError"], res)
+        self.assertIn("reject", res["content"][0]["text"])
+
+    def test_author_cannot_verify_own_item(self):
+        item_id = self._completed_item()
+        res = self.agent_a.call_tool("delm_verify_task", {
+            "item_id": item_id, "verdict": "accept", "evidence": "looks good"})
+        self.assertTrue(res["isError"])
+        self.assertIn("cannot verify their own", res["content"][0]["text"])
+
+    def test_open_item_cannot_be_verified(self):
+        self.agent_a.call_tool("delm_reserve_task", {"subject": "O", "detail": "d"})
+        item_id = self.agent_a.sc.read("agent-alpha", full=True)["queue"][0]["id"]
+        res = self.agent_b.call_tool("delm_verify_task", {
+            "item_id": item_id, "verdict": "accept", "evidence": "too early"})
+        self.assertTrue(res["isError"])
+
+    def test_bad_verdict_rejected(self):
+        item_id = self._completed_item()
+        res = self.agent_b.call_tool("delm_verify_task", {
+            "item_id": item_id, "verdict": "maybe", "evidence": "x"})
+        self.assertTrue(res["isError"])
+
+
 class TestToolValidation(unittest.TestCase):
     def setUp(self):
         self.temp_dir, _, _, self.agent_a, _ = make_servers()
@@ -448,6 +502,26 @@ class TestInspectAndApply(unittest.TestCase):
         self.assertFalse(appl["isError"], appl)
         self.assertEqual((self.ws_b / "doc.txt").read_text(), "hello\n")
 
+    def test_apply_markers_merge_conflict(self):
+        pub_id = self._publish(content="peer version\n")
+        (self.ws_b / "f.txt").write_text("my own conflicting edits")
+        res = self.agent_b.call_tool(
+            "delm_apply_files", {"publication_id": pub_id, "on_conflict": "markers"})
+        self.assertFalse(res["isError"], res)
+        self.assertIn("conflict markers", res["content"][0]["text"])
+        merged = (self.ws_b / "f.txt").read_text()
+        self.assertIn("<<<<<<< LOCAL", merged)
+        self.assertIn("my own conflicting edits", merged)
+        self.assertIn("=======", merged)
+        self.assertIn("peer version", merged)
+        self.assertIn(">>>>>>> PEER", merged)
+
+    def test_apply_bad_strategy_rejected(self):
+        pub_id = self._publish(content="peer version\n")
+        res = self.agent_b.call_tool(
+            "delm_apply_files", {"publication_id": pub_id, "on_conflict": "clobber"})
+        self.assertTrue(res["isError"])
+
     def test_apply_subset_paths(self):
         self.agent_a.call_tool("delm_reserve_task", {"subject": "S2", "detail": "D"})
         item_id = self.agent_a.sc.read("aa", full=True)["queue"][0]["id"]
@@ -500,6 +574,20 @@ class TestPathSafety(unittest.TestCase):
         res = self.agent_a.call_tool("delm_complete_task", {
             "item_id": item_id, "summary": "x", "attach_paths": [".env"]})
         self.assertTrue(res["isError"])
+
+    def test_attach_rejects_cache_and_build_artifacts(self):
+        for name in [".DS_Store", "mod.pyc", "mod.pyo", ".pytest_cache/x",
+                     ".harness2/m.db", "node_modules/x.js"]:
+            target = self.ws_a / name
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text("junk")
+        item_id = self._reserve()
+        for name in [".DS_Store", "mod.pyc", ".pytest_cache/x",
+                     ".harness2/m.db", "node_modules/x.js"]:
+            res = self.agent_a.call_tool("delm_complete_task", {
+                "item_id": item_id, "summary": "x", "attach_paths": [name]})
+            self.assertTrue(res["isError"], name)
+            self.assertIn("cannot be published", res["content"][0]["text"])
 
     def test_apply_rejects_traversal_paths(self):
         (self.ws_a / "ok.txt").write_text("ok\n")
@@ -581,6 +669,28 @@ class TestCliWiring(unittest.TestCase):
         )
         self.assertEqual(proc.returncode, 2)
         self.assertIn("not a regular file", proc.stderr)
+
+    def test_git_exclude_opt_in(self):
+        tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, tmp, True)
+        (tmp / ".git" / "info").mkdir(parents=True)
+        DelmMcpServer(actor="w", board_path=tmp / "b.sqlite",
+                      workspace_path=tmp, peers=["w"], git_exclude=True)
+        exclude = (tmp / ".git" / "info" / "exclude").read_text()
+        self.assertIn(".delm/", exclude)
+        # Second start is idempotent: no duplicate lines.
+        DelmMcpServer(actor="w", board_path=tmp / "b.sqlite",
+                      workspace_path=tmp, peers=["w"], git_exclude=True)
+        exclude = (tmp / ".git" / "info" / "exclude").read_text()
+        self.assertEqual(exclude.splitlines().count(".delm/"), 1)
+
+    def test_git_exclude_off_by_default(self):
+        tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, tmp, True)
+        (tmp / ".git" / "info").mkdir(parents=True)
+        DelmMcpServer(actor="w", board_path=tmp / "b.sqlite",
+                      workspace_path=tmp, peers=["w"])
+        self.assertFalse((tmp / ".git" / "info" / "exclude").exists())
 
     def test_both_databases_use_wal(self):
         import sqlite3

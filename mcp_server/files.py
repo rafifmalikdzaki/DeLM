@@ -24,9 +24,12 @@ from board.shared_context import BoardError, FILE_LIMITS, SCRATCH_ROOT
 
 SKIP_DIRS = frozenset({
     "node_modules", ".git", "__pycache__", ".venv", "venv", "dist", "build",
-    ".cache", ".pytestcache", ".codex", ".ssh", ".aws", ".config",
-    ".claude", "records",
+    ".cache", ".pytest_cache", ".pytestcache", ".codex", ".ssh", ".aws",
+    ".config", ".claude", "records", ".harness2", ".harness_staged",
+    ".delm", ".board",
 })
+SKIP_SUFFIXES = (".pyc", ".pyo")
+SKIP_BASENAMES = frozenset({".ds_store"})
 CREDENTIAL_NAMES = frozenset({
     "auth.json", "credentials.json", "id_rsa", "id_ed25519",
     "grading.log", "reward.txt", "reward.json",
@@ -37,6 +40,8 @@ def is_excluded_board_path(name: str) -> bool:
     """True when a board-relative path must never be published or written."""
     parts = Path(name).parts
     basename = Path(name).name.lower()
+    if basename in SKIP_BASENAMES or basename.endswith(SKIP_SUFFIXES):
+        return True
     return (
         bool(set(parts) & SKIP_DIRS)
         or basename in CREDENTIAL_NAMES
